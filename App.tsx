@@ -5,11 +5,11 @@ import { generateSpeech } from './geminiService';
 import { decodeBase64, decodeAudioData, createWavBlob } from './audioUtils';
 
 const VOICE_OPTIONS: VoiceOption[] = [
+  { id: VoiceName.CHARON, name: 'Charon', description: 'Sturdy & Reliable - Technical Explanations' },
   { id: VoiceName.ZEPHYR, name: 'Zephyr', description: 'Authoritative & Confident - Ideal for Product Demos' },
   { id: VoiceName.FENRIR, name: 'Fenrir', description: 'Smooth & Sophisticated - Professional Narrative' },
   { id: VoiceName.KORE, name: 'Kore', description: 'Bright & Energetic - Modern Start-up Vibe' },
   { id: VoiceName.PUCK, name: 'Puck', description: 'Youthful & Dynamic - Engaging Content' },
-  { id: VoiceName.CHARON, name: 'Charon', description: 'Sturdy & Reliable - Technical Explanations' },
 ];
 
 const DEFAULT_STORY = "Welcome to Lumina, the next generation of cloud-native infrastructure management. Our platform provides absolute visibility into your distributed microservices, allowing your engineering teams to deploy faster, resolve incidents with precision, and scale with total confidence. From real-time telemetry to automated healing, we've simplified the complex. Let me show you how Lumina can transform your workflow today.";
