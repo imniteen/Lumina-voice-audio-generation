@@ -1,0 +1,8 @@
+
+{
+  "name": "Lumina Voice - AI Storyteller",
+  "description": "A high-fidelity text-to-speech application powered by Gemini 2.5 TTS, bringing narratives to life with natural, expressive voices.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
