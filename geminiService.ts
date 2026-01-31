@@ -1,32 +1,39 @@
 
-import { GoogleGenAI } from "@google/genai";
-import { VoiceName } from "./types";
+import { GoogleGenAI, Modality } from "@google/genai";
+import { VoiceName, Accent } from "./types";
 
-const API_KEY = process.env.API_KEY || '';
-
-export const generateSpeech = async (text: string, voice: VoiceName) => {
-  if (!API_KEY) {
-    throw new Error("API Key is not configured.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
+/**
+ * Generates speech from text using the Gemini TTS model.
+ * Incorporates accent instructions by prepending them to the prompt text.
+ */
+export const generateSpeech = async (
+  text: string, 
+  voice: VoiceName, 
+  speakingRate: number = 1.0, 
+  accent: Accent = 'Neutral'
+) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  // Note: For TTS-specific models, sending the text directly is more reliable 
-  // than including instructions, which can sometimes trigger 500 errors.
+  // Construct the prompt with accent instructions if applicable
+  const promptText = accent !== 'Neutral' 
+    ? `Speak with a ${accent} accent: ${text}` 
+    : text;
+
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
     contents: [{ 
       parts: [{ 
-        text: text 
+        text: promptText 
       }] 
     }],
     config: {
-      // Using string 'AUDIO' for robustness across SDK versions
-      responseModalities: ['AUDIO'],
+      responseModalities: [Modality.AUDIO],
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: { voiceName: voice },
         },
+        // speakingRate integration can be attempted if the SDK supports it in the runtime 
+        // even if types are missing, or handled by steering instructions if preferred.
       },
     },
   });

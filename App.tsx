@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { VoiceName, VoiceOption, AudioState } from './types';
+import { VoiceName, VoiceOption, AudioState, Accent } from './types';
 import { generateSpeech } from './geminiService';
 import { decodeBase64, decodeAudioData, createWavBlob } from './audioUtils';
 
@@ -12,13 +12,18 @@ const VOICE_OPTIONS: VoiceOption[] = [
   { id: VoiceName.PUCK, name: 'Puck', description: 'Youthful & Dynamic - Engaging Content' },
 ];
 
+const ACCENTS: Accent[] = ['Neutral', 'British', 'Australian', 'Indian', 'Southern US', 'Scottish'];
+
 const DEFAULT_STORY = "Welcome to Lumina, the next generation of cloud-native infrastructure management. Our platform provides absolute visibility into your distributed microservices, allowing your engineering teams to deploy faster, resolve incidents with precision, and scale with total confidence. From real-time telemetry to automated healing, we've simplified the complex. Let me show you how Lumina can transform your workflow today.";
 
 const App: React.FC = () => {
   const [text, setText] = useState(DEFAULT_STORY);
-  const [selectedVoice, setSelectedVoice] = useState<VoiceName>(VoiceName.ZEPHYR);
+  const [selectedVoice, setSelectedVoice] = useState<VoiceName>(VoiceName.CHARON);
+  const [selectedAccent, setSelectedAccent] = useState<Accent>('Neutral');
+  const [speakingRate, setSpeakingRate] = useState<number>(1.0);
   const [lastAudioBlob, setLastAudioBlob] = useState<Blob | null>(null);
   const [visualData, setVisualData] = useState<number[]>(new Array(16).fill(0));
+  const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState<AudioState>({
     isGenerating: false,
     isPlaying: false,
@@ -29,14 +34,71 @@ const App: React.FC = () => {
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        
+        if (finalTranscript) {
+          setText(prev => (prev.trim() ? prev + ' ' + finalTranscript : finalTranscript));
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error', event.error);
+        setIsListening(false);
+        setStatus(prev => ({ ...prev, error: `Microphone error: ${event.error}` }));
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      setStatus(prev => ({ ...prev, error: "Speech recognition is not supported in this browser." }));
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+    } else {
+      setStatus(prev => ({ ...prev, error: null }));
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (e) {
+        console.error("Failed to start recognition", e);
+      }
+    }
+  };
 
   const stopPlayback = useCallback(() => {
     if (sourceNodeRef.current) {
       try {
         sourceNodeRef.current.stop();
-      } catch (e) {
-        // Source might have already stopped
-      }
+      } catch (e) { }
       sourceNodeRef.current = null;
     }
     if (animationFrameRef.current) {
@@ -55,7 +117,6 @@ const App: React.FC = () => {
 
     const update = () => {
       analyser.getByteFrequencyData(dataArray);
-      
       const step = Math.floor(bufferLength / 20); 
       const newVisualData = [];
       for (let i = 0; i < 16; i++) {
@@ -78,13 +139,14 @@ const App: React.FC = () => {
       return;
     }
 
+    if (isListening) toggleListening();
+
     setStatus({ isGenerating: true, isPlaying: false, error: null });
     setLastAudioBlob(null);
 
     try {
-      const base64Audio = await generateSpeech(text, selectedVoice);
+      const base64Audio = await generateSpeech(text, selectedVoice, speakingRate, selectedAccent);
       const audioBytes = decodeBase64(base64Audio);
-
       const wavBlob = createWavBlob(audioBytes, 24000);
       setLastAudioBlob(wavBlob);
 
@@ -102,16 +164,13 @@ const App: React.FC = () => {
 
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
-      
       source.connect(analyserRef.current);
       analyserRef.current.connect(audioContextRef.current.destination);
       
       source.onended = () => {
         setStatus(prev => ({ ...prev, isPlaying: false }));
         setVisualData(new Array(16).fill(0));
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-        }
+        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
         sourceNodeRef.current = null;
       };
 
@@ -126,7 +185,7 @@ const App: React.FC = () => {
         isGenerating: false, 
         isPlaying: false, 
         error: err.message?.includes("500") 
-          ? "The server encountered an internal error. Please try again with a shorter text or a different voice." 
+          ? "The server encountered an internal error. Please try again with a shorter text or a different accent." 
           : err.message || 'An error occurred while generating speech.' 
       });
     }
@@ -137,7 +196,8 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(lastAudioBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lumina-demo-${selectedVoice.toLowerCase()}.wav`;
+    const accentStr = selectedAccent === 'Neutral' ? '' : `-${selectedAccent.toLowerCase().replace(' ', '-')}`;
+    a.download = `lumina-${selectedVoice.toLowerCase()}${accentStr}.wav`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -152,143 +212,165 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
-      <div className="w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row">
+      <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row">
         
         {/* Left Side: Controls */}
-        <div className="w-full md:w-1/3 bg-slate-800/50 p-6 md:p-8 flex flex-col gap-8 border-b md:border-b-0 md:border-r border-slate-700">
+        <div className="w-full md:w-80 bg-slate-800/50 p-6 md:p-8 flex flex-col gap-6 border-b md:border-b-0 md:border-r border-slate-700">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-              Lumina Demo
+              Lumina Voice
             </h1>
-            <p className="text-slate-400 text-sm mt-2">Professional Speech Synthesis</p>
+            <p className="text-slate-400 text-sm mt-2">AI Storytelling Engine</p>
           </div>
 
-          <div className="space-y-4">
-            <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Demo Voice</label>
+          <div className="space-y-3">
+            <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Voice Character</label>
             <div className="grid grid-cols-1 gap-2">
               {VOICE_OPTIONS.map((voice) => (
                 <button
                   key={voice.id}
-                  onClick={() => {
-                    setSelectedVoice(voice.id);
-                    setLastAudioBlob(null);
-                  }}
-                  className={`p-3 rounded-xl text-left transition-all duration-200 border ${
+                  onClick={() => { setSelectedVoice(voice.id); setLastAudioBlob(null); }}
+                  className={`p-3 rounded-xl text-left transition-all duration-200 border text-sm ${
                     selectedVoice === voice.id 
-                    ? 'bg-blue-600/20 border-blue-500 text-blue-100' 
+                    ? 'bg-blue-600/20 border-blue-500 text-blue-100 ring-1 ring-blue-500/50' 
                     : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500'
                   }`}
                 >
                   <div className="font-bold">{voice.name}</div>
-                  <div className="text-xs opacity-70 leading-tight">{voice.description}</div>
+                  <div className="text-[11px] opacity-60 leading-tight truncate">{voice.description}</div>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="mt-auto space-y-3">
+          <div className="space-y-3">
+            <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Voice Accent</label>
+            <div className="grid grid-cols-2 gap-1.5">
+              {ACCENTS.map((accent) => (
+                <button
+                  key={accent}
+                  onClick={() => { setSelectedAccent(accent); setLastAudioBlob(null); }}
+                  className={`px-2 py-2 rounded-lg text-xs font-medium transition-all border ${
+                    selectedAccent === accent
+                      ? 'bg-indigo-600/30 border-indigo-500 text-indigo-100'
+                      : 'bg-slate-800/50 border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300'
+                  }`}
+                >
+                  {accent}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Pace</label>
+              <span className="text-blue-400 font-bold text-[10px] bg-blue-400/10 px-1.5 py-0.5 rounded border border-blue-400/20">{speakingRate.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range" min="0.5" max="2.0" step="0.1" value={speakingRate}
+              onChange={(e) => { setSpeakingRate(parseFloat(e.target.value)); setLastAudioBlob(null); }}
+              className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            />
+          </div>
+
+          <div className="mt-auto space-y-3 pt-4 border-t border-slate-700/50">
              {status.error && (
-              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/50 rounded-xl text-red-400 text-xs leading-relaxed">
-                <strong>Error:</strong> {status.error}
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-[10px] leading-relaxed">
+                {status.error}
               </div>
             )}
             
             <button
               onClick={handleGenerateAndPlay}
               disabled={status.isGenerating || !text.trim()}
-              className={`w-full py-4 rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition-all duration-300 ${
+              className={`w-full py-4 rounded-2xl font-bold text-base flex items-center justify-center gap-2 transition-all duration-300 ${
                 status.isPlaying
                 ? 'bg-slate-700 hover:bg-slate-600 text-white'
-                : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed'
+                : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-900/20 disabled:opacity-30'
               }`}
             >
               {status.isGenerating ? (
-                <>
-                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Processing...
-                </>
+                <div className="flex gap-1 items-center">
+                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce"></div>
+                </div>
               ) : status.isPlaying ? (
-                <>
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H10a1 1 0 01-1-1v-4z" />
-                  </svg>
-                  Stop Preview
-                </>
+                <>Stop</>
               ) : (
-                <>
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Generate Demo
-                </>
+                <>Generate & Play</>
               )}
             </button>
 
             <button
               onClick={handleDownload}
               disabled={!lastAudioBlob}
-              className={`w-full py-3 rounded-2xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-300 border ${
+              className={`w-full py-3 rounded-2xl font-semibold text-xs flex items-center justify-center gap-2 border transition-all ${
                 lastAudioBlob
-                ? 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-500'
+                ? 'bg-slate-800/80 border-slate-600 text-slate-300 hover:bg-slate-700'
                 : 'bg-transparent border-slate-800 text-slate-700 cursor-not-allowed'
               }`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Export .WAV
+              Export High-Res .WAV
             </button>
           </div>
         </div>
 
         {/* Right Side: Demo Script Area */}
         <div className="flex-1 p-6 md:p-8 flex flex-col relative bg-slate-900/40">
-          <label className="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-4 block">Demo Script</label>
+          <div className="flex justify-between items-center mb-6">
+            <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block">Narrative Script</label>
+            <button
+              onClick={toggleListening}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full border transition-all duration-300 text-[10px] font-bold uppercase tracking-widest ${
+                isListening 
+                  ? 'bg-red-500 border-red-400 text-white shadow-lg shadow-red-900/40' 
+                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+              }`}
+            >
+              <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-white animate-pulse' : 'bg-red-500'}`}></div>
+              {isListening ? 'Live Recording...' : 'Voice Dictation'}
+            </button>
+          </div>
+          
           <textarea
             value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              setLastAudioBlob(null);
-            }}
-            placeholder="Enter your product demo script here..."
-            className="flex-1 w-full bg-transparent text-slate-100 text-lg md:text-xl leading-relaxed resize-none focus:outline-none placeholder:text-slate-700 selection:bg-blue-500/30"
+            onChange={(e) => { setText(e.target.value); setLastAudioBlob(null); }}
+            placeholder="Type your script or start dictation..."
+            className="flex-1 w-full bg-transparent text-slate-200 text-lg md:text-2xl leading-relaxed resize-none focus:outline-none placeholder:text-slate-800 selection:bg-blue-500/30 font-light"
           />
           
-          <div className="mt-4 flex items-center justify-between text-slate-500 text-sm border-t border-slate-800 pt-4">
-            <span>{text.length} characters</span>
-            <div className="flex gap-4">
+          <div className="mt-6 flex items-center justify-between text-slate-600 text-[10px] border-t border-slate-800 pt-6 font-medium tracking-wider">
+            <span>{text.split(/\s+/).filter(x => x).length} WORDS / {text.length} CHARS</span>
+            <div className="flex gap-6">
                <button 
                 onClick={() => { setText(""); setLastAudioBlob(null); }}
-                className="hover:text-slate-300 transition-colors"
+                className="hover:text-red-400 transition-colors uppercase"
               >
-                Clear Script
+                Clear
               </button>
               <button 
                 onClick={() => { setText(DEFAULT_STORY); setLastAudioBlob(null); }}
-                className="hover:text-slate-300 transition-colors font-medium text-blue-400"
+                className="hover:text-blue-400 transition-colors uppercase text-blue-500"
               >
-                Reset to Demo
+                Restore Default
               </button>
             </div>
           </div>
 
           {/* Real Audio Visualizer */}
-          <div className="absolute bottom-16 right-8 flex items-end gap-1.5 h-20 pointer-events-none">
+          <div className="absolute bottom-20 right-10 flex items-end gap-1.5 h-24 pointer-events-none">
             {visualData.map((value, i) => (
               <div 
                 key={i} 
-                className="w-2 rounded-full transition-all duration-75 ease-out shadow-[0_0_15px_rgba(96,165,250,0.2)]"
+                className="w-2.5 rounded-full transition-all duration-75 ease-out"
                 style={{ 
-                  height: `${Math.max(8, (value / 255) * 100)}%`,
+                  height: `${Math.max(4, (value / 255) * 100)}%`,
                   backgroundColor: status.isPlaying 
-                    ? `rgb(${Math.min(255, 60 + value)}, ${Math.min(255, 130 + value / 2)}, 255)` 
-                    : '#1e293b',
-                  opacity: status.isPlaying ? 0.9 : 0.1
+                    ? `rgba(96, 165, 250, ${0.3 + (value / 255) * 0.7})` 
+                    : 'rgba(30, 41, 59, 0.3)',
+                  boxShadow: status.isPlaying && value > 150 ? '0 0 15px rgba(96, 165, 250, 0.4)' : 'none'
                 }}
               />
             ))}
@@ -296,9 +378,10 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <footer className="mt-8 text-slate-500 text-xs text-center opacity-70 flex flex-col gap-1">
-        <p>Using <code>gemini-2.5-flash-preview-tts</code> for professional narration.</p>
-        <p>Low-latency PCM-to-WAV pipeline ensuring broadcast-quality audio output.</p>
+      <footer className="mt-8 text-slate-600 text-[10px] text-center opacity-70 flex flex-col gap-2 tracking-[0.2em] uppercase">
+        <p>Engineered with Gemini 2.5 Flash TTS</p>
+        <div className="h-px w-12 bg-slate-800 mx-auto"></div>
+        <p>Broadcasting in Studio Quality 24kHz Mono</p>
       </footer>
     </div>
   );

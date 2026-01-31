@@ -7,6 +7,8 @@ export enum VoiceName {
   ZEPHYR = 'Zephyr'
 }
 
+export type Accent = 'Neutral' | 'British' | 'Australian' | 'Indian' | 'Southern US' | 'Scottish';
+
 export interface VoiceOption {
   id: VoiceName;
   name: string;
